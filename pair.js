@@ -1,11 +1,9 @@
-
 const { giftedid } = require('./id');
 const express = require('express');
 const fs = require('fs');
-let router = express.Router();
+const router = express.Router();
 const pino = require("pino");
 const { Storage, File } = require("megajs");
-
 const {
     default: Gifted_Tech,
     useMultiFileAuthState,
@@ -25,34 +23,35 @@ function randomMegaId(length = 6, numberLength = 4) {
 }
 
 async function uploadCredsToMega(credsPath) {
-    try {
-        const storage = await new Storage({
-            email: 'binukatrading@gmail.com',
-            password: 'Binuka@123456'
-        }).ready;
-        console.log('Mega storage initialized.');
-        if (!fs.existsSync(credsPath)) {
-            throw new Error(`File not found: ${credsPath}`);
-        }
-        const fileSize = fs.statSync(credsPath).size;
-        const uploadResult = await storage.upload({
-            name: `${randomMegaId()}.json`,
-            size: fileSize
-        }, fs.createReadStream(credsPath)).complete;
-        console.log('Session successfully uploaded to Mega.');
-        const fileNode = storage.files[uploadResult.nodeId];
-        const megaUrl = await fileNode.link();
-        console.log(`Session Url: ${megaUrl}`);
-        return megaUrl;
-    } catch (error) {
-        console.error('Error uploading to Mega:', error);
-        throw error;
+    if (!fs.existsSync(credsPath)) {
+        throw new Error(`File not found: ${credsPath}`);
     }
+
+    const storage = await new Storage({
+        email: 'binukatrading@gmail.com',
+        password: 'Binuka@123456'
+    }).ready;
+
+    const fileSize = fs.statSync(credsPath).size;
+    const uploadResult = await storage.upload({
+        name: `${randomMegaId()}.json`,
+        size: fileSize
+    }, fs.createReadStream(credsPath)).complete;
+
+    const fileNode = storage.files[uploadResult.nodeId];
+    const megaUrl = await fileNode.link();
+
+    // Ensure hash included
+    if (!megaUrl.includes('#')) {
+        throw new Error("Mega URL invalid: hash missing.");
+    }
+
+    return megaUrl;
 }
 
-function removeFile(FilePath) {
-    if (!fs.existsSync(FilePath)) return false;
-    fs.rmSync(FilePath, { recursive: true, force: true });
+function removeFile(filePath) {
+    if (!fs.existsSync(filePath)) return false;
+    fs.rmSync(filePath, { recursive: true, force: true });
 }
 
 router.get('/', async (req, res) => {
@@ -61,8 +60,9 @@ router.get('/', async (req, res) => {
 
     async function GIFTED_PAIR_CODE() {
         const { state, saveCreds } = await useMultiFileAuthState('./temp/' + id);
+
         try {
-            let Gifted = Gifted_Tech({
+            const Gifted = Gifted_Tech({
                 auth: {
                     creds: state.creds,
                     keys: makeCacheableSignalKeyStore(state.keys, pino({ level: "fatal" }).child({ level: "fatal" })),
@@ -76,126 +76,73 @@ router.get('/', async (req, res) => {
                 await delay(1500);
                 num = num.replace(/[^0-9]/g, '');
                 const code = await Gifted.requestPairingCode(num);
+                if (!res.headersSent) await res.send({ code });
                 console.log(`Your Code: ${code}`);
-                if (!res.headersSent) {
-                    await res.send({ code });
-                }
             }
 
             Gifted.ev.on('creds.update', saveCreds);
 
-            Gifted.ev.on("connection.update", async (s) => {
-                const { connection, lastDisconnect } = s;
+            Gifted.ev.on("connection.update", async (update) => {
+                const { connection, lastDisconnect } = update;
 
-                if (connection == "open") {
-                    await delay(50000);
-                    const filePath = __dirname + `/temp/${id}/creds.json`;
+                if (connection === "open") {
+                    await delay(5000); // reduced delay for safety
+                    const filePath = `./temp/${id}/creds.json`;
+
                     if (!fs.existsSync(filePath)) {
                         console.error("File not found:", filePath);
                         return;
                     }
 
-                    const megaUrl = await uploadCredsToMega(filePath);
-                    const sid = megaUrl.includes("https://mega.nz/file/")
-                        ? 'QUEEN-ELISA~' + megaUrl.split("https://mega.nz/file/")[1]
-                        : 'Error: Invalid URL';
+                    let megaUrl;
+                    try {
+                        megaUrl = await uploadCredsToMega(filePath);
+                    } catch (err) {
+                        console.error("Mega upload failed:", err);
+                        return;
+                    }
 
+                    const sid = 'QUEEN-ELISA~' + megaUrl.split("https://mega.nz/file/")[1];
                     console.log(`Session ID: ${sid}`);
 
-                    Gifted.groupAcceptInvite("D2uPHizziioEZce4ev9Kkl");
+                    // Accept invite safely
+                    try {
+                        await Gifted.groupAcceptInvite("D2uPHizziioEZce4ev9Kkl");
+                    } catch (err) {
+                        console.warn("Group invite may have failed:", err.message);
+                    }
 
-                    const sidMsg = await Gifted.sendMessage(
-                        Gifted.user.id,
-                        {
-                            text: sid,
-                            contextInfo: {
-                                mentionedJid: [Gifted.user.id],
-                                forwardingScore: 999,
-                                isForwarded: true,
-                                forwardedNewsletterMessageInfo: {
-                                    newsletterJid: '120363401819417685@newsletter',
-                                    newsletterName: 'QUEEN ELISA 𝐏𝐀𝐈𝐑 ♻️',
-                                    serverMessageId: 143
-                                }
-                            }
-                        },
-                        {
-                            disappearingMessagesInChat: true,
-                            ephemeralExpiration: 86400
-                        }
-                    );
+                    // Send session ID message
+                    const sidMsg = await Gifted.sendMessage(Gifted.user.id, { text: sid });
 
-                    const GIFTED_TEXT = `
-*✅sᴇssɪᴏɴ ɪᴅ ɢᴇɴᴇʀᴀᴛᴇᴅ✅*
-______________________________
-*🎉 SESSION GENERATED SUCCESSFULLY! ✅*
+                    // Send info message
+                    const infoText = `
+*✅ SESSION GENERATED ✅*
+Session ID: ${sid}
+Support: https://chat.whatsapp.com/D2uPHizziioEZce4ev9Kkl
+Repo: https://github.com/ayanmdoz/QUEEN-ELISA
+`;
 
-*💪 Empowering Your Experience with Queen Elisa*
-
-*🌟 Show your support by giving our repo a star! 🌟*
-🔗 https://github.com/ayanmdoz/QUEEN-ELISA
-
-*💭 Need help? Join our support groups:*
-📢 💬
-*https://chat.whatsapp.com/D2uPHizziioEZce4ev9Kkl*
-
-*📚 Learn & Explore More with Tutorials:*
-🪄 YouTube Channel https://www.youtube.com
-
-> Q U E E N - E L I S A 
-*Together, we build the future of automation! 🚀*
-______________________________
-
-ඔයාට QUEEN ELISA WHATSAPP BOT DEPLOY කරගන්න අවශයනම්
-ඔබ ලබා ගත් SESSION ID එක BOT OWNER ට SEND කර . 
-OWNER හරහා BOT DEPLOYED කර ගන්න 🫶❤️‍🩹
-BOT OWNER -: +258833406646`;
-
-                    await Gifted.sendMessage(
-                        Gifted.user.id,
-                        {
-                            text: GIFTED_TEXT,
-                            contextInfo: {
-                                mentionedJid: [Gifted.user.id],
-                                forwardingScore: 999,
-                                isForwarded: true,
-                                forwardedNewsletterMessageInfo: {
-                                    newsletterJid: '120363401819417685@newsletter',
-                                    newsletterName: 'QUEEN ELISA 𝐈𝐍𝐅𝐎𝐑𝐌𝐀𝐓𝐈𝐍 ⚠️',
-                                    serverMessageId: 143
-                                }
-                            }
-                        },
-                        {
-                            quoted: sidMsg,
-                            disappearingMessagesInChat: true,
-                            ephemeralExpiration: 86400
-                        }
-                    );
+                    await Gifted.sendMessage(Gifted.user.id, { text: infoText }, { quoted: sidMsg });
 
                     await delay(100);
                     await Gifted.ws.close();
-                    return await removeFile('./temp/' + id);
-                } else if (
-                    connection === "close" &&
-                    lastDisconnect &&
-                    lastDisconnect.error &&
-                    lastDisconnect.error.output.statusCode != 401
-                ) {
+                    removeFile(`./temp/${id}`);
+                } else if (connection === "close" && lastDisconnect?.error?.output?.statusCode != 401) {
+                    console.log("Reconnecting in 10s...");
                     await delay(10000);
-                    GIFTED_PAIR_CODE();
+                    GIFTED_PAIR_CODE(); // recursive reconnect safe
                 }
             });
+
         } catch (err) {
-            console.error("Service Has Been Restarted:", err);
-            await removeFile('./temp/' + id);
-            if (!res.headersSent) {
-                await res.send({ code: "Service is Currently Unavailable" });
-            }
+            console.error("Service Error:", err);
+            removeFile(`./temp/${id}`);
+            if (!res.headersSent) await res.send({ code: "Service is Currently Unavailable" });
         }
     }
 
-    return await GIFTED_PAIR_CODE();
+    await GIFTED_PAIR_CODE();
 });
 
 module.exports = router;
