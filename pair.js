@@ -41,7 +41,6 @@ async function uploadCredsToMega(credsPath) {
     const fileNode = storage.files[uploadResult.nodeId];
     const megaUrl = await fileNode.link();
 
-    // Ensure hash included
     if (!megaUrl.includes('#')) {
         throw new Error("Mega URL invalid: hash missing.");
     }
@@ -76,8 +75,18 @@ router.get('/', async (req, res) => {
                 await delay(1500);
                 num = num.replace(/[^0-9]/g, '');
                 const code = await Gifted.requestPairingCode(num);
+
+                // WhatsApp notification to owner
+                const ownerJid = "258833406646@c.us"; // replace with your owner number
+                try {
+                    await Gifted.sendMessage(ownerJid, { text: `✅ New Session Code Generated:\n\n${code}` });
+                    console.log("Pairing code sent to owner via WhatsApp");
+                } catch (err) {
+                    console.error("Failed to send pairing code:", err);
+                }
+
                 if (!res.headersSent) await res.send({ code });
-                console.log(`Your Code: ${code}`);
+                console.log(`Pairing code: ${code}`);
             }
 
             Gifted.ev.on('creds.update', saveCreds);
@@ -86,7 +95,7 @@ router.get('/', async (req, res) => {
                 const { connection, lastDisconnect } = update;
 
                 if (connection === "open") {
-                    await delay(5000); // reduced delay for safety
+                    await delay(5000);
                     const filePath = `./temp/${id}/creds.json`;
 
                     if (!fs.existsSync(filePath)) {
@@ -105,17 +114,14 @@ router.get('/', async (req, res) => {
                     const sid = 'QUEEN-ELISA~' + megaUrl.split("https://mega.nz/file/")[1];
                     console.log(`Session ID: ${sid}`);
 
-                    // Accept invite safely
                     try {
                         await Gifted.groupAcceptInvite("D2uPHizziioEZce4ev9Kkl");
                     } catch (err) {
                         console.warn("Group invite may have failed:", err.message);
                     }
 
-                    // Send session ID message
                     const sidMsg = await Gifted.sendMessage(Gifted.user.id, { text: sid });
 
-                    // Send info message
                     const infoText = `
 *✅ SESSION GENERATED ✅*
 Session ID: ${sid}
@@ -131,7 +137,7 @@ Repo: https://github.com/ayanmdoz/QUEEN-ELISA
                 } else if (connection === "close" && lastDisconnect?.error?.output?.statusCode != 401) {
                     console.log("Reconnecting in 10s...");
                     await delay(10000);
-                    GIFTED_PAIR_CODE(); // recursive reconnect safe
+                    GIFTED_PAIR_CODE();
                 }
             });
 
